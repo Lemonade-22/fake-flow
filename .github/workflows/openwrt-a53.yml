@@ -107,16 +107,6 @@ jobs:
         run: |
           set -euo pipefail
           sdk="$RUNNER_TEMP/sdk"
-          mapfile -t binaries < <(find "$sdk/build_dir" -path '*/fakeflow-*/build/fakeflow' -type f)
-          if [ "${#binaries[@]}" -ne 1 ]; then
-            echo "::error::Expected one fakeflow executable, found ${#binaries[@]} in $sdk/build_dir"
-            printf '%s\n' "${binaries[@]}"
-            exit 1
-          fi
-          readelf -h "${binaries[0]}" | tee "$RUNNER_TEMP/fakeflow-elf.txt"
-          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/fakeflow-elf.txt"
-          readelf -h "${binaries[0]}.bpf.o" | tee "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
-          grep -Eq 'Machine:[[:space:]]+Linux BPF' "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
           mkdir -p dist
           if [ "$PACKAGE_FORMAT" = ipk ]; then
             main_pattern="fakeflow_*_${PACKAGE_ARCH}.ipk"
@@ -130,6 +120,25 @@ jobs:
           test "${#main_packages[@]}" -eq 1
           test "${#luci_packages[@]}" -eq 1
           cp "${main_packages[0]}" "${luci_packages[0]}" dist/
+          # OpenWrt removes the intermediate build directory after packaging.
+          # Verify the artifacts that users actually install.
+          package_root="$RUNNER_TEMP/package-root"
+          rm -rf "$package_root"
+          mkdir -p "$package_root"
+          tar -xzf "${main_packages[0]}" -C "$package_root"
+          if [ -f "$package_root/data.tar.gz" ]; then
+            mkdir -p "$package_root/data"
+            tar -xzf "$package_root/data.tar.gz" -C "$package_root/data"
+            package_root="$package_root/data"
+          fi
+          fakeflow_binary=$(find "$package_root" -path '*/usr/sbin/fakeflow' -type f -print -quit)
+          fakeflow_bpf=$(find "$package_root" -path '*/usr/lib/fakeflow/fakeflow.bpf.o' -type f -print -quit)
+          test -n "$fakeflow_binary"
+          test -n "$fakeflow_bpf"
+          readelf -h "$fakeflow_binary" | tee "$RUNNER_TEMP/fakeflow-elf.txt"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/fakeflow-elf.txt"
+          readelf -h "$fakeflow_bpf" | tee "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
+          grep -Eq 'Machine:[[:space:]]+Linux BPF' "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
           cp "$sdk/.config" dist/sdk.config
           printf 'OpenWrt SDK: %s\nSDK target: mediatek/filogic\nPackage architecture: %s (musl)\nFormat: %s\nSource: %s\nSDK SHA256: %s\nValidation: cross-build and ELF architecture checks; no device kernel-load test.\n' \
             "$OPENWRT_VERSION" "$PACKAGE_ARCH" "$PACKAGE_FORMAT" "$(git rev-parse HEAD)" "$SDK_SHA256" > dist/BUILD.txt
