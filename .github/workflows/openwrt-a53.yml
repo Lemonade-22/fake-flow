@@ -1,0 +1,146 @@
+name: OpenWrt A53 IPK and APK
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'ebpf/**'
+      - 'config/**'
+      - 'packaging/openwrt/**'
+      - 'packaging/luci/**'
+      - 'tests/luci/config.test.cjs'
+      - '.github/workflows/openwrt-a53.yml'
+      - 'Makefile'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  a53:
+    name: A53 / OpenWrt ${{ matrix.version }} / ${{ matrix.format }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '24.10.5'
+            format: ipk
+            sdk: openwrt-sdk-24.10.5-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sha256: 0fa98c542ee07f1423ebcdce19aed464bc7f8008ef2cbe83cb723ec694ed8c56
+          - version: '25.12.5'
+            format: apk
+            sdk: openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sha256: ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
+    env:
+      OPENWRT_VERSION: ${{ matrix.version }}
+      PACKAGE_FORMAT: ${{ matrix.format }}
+      SDK_FILE: ${{ matrix.sdk }}
+      SDK_SHA256: ${{ matrix.sha256 }}
+      PACKAGE_ARCH: aarch64_cortex-a53
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test LuCI configuration module
+        run: node tests/luci/config.test.cjs
+      - name: Install SDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang llvm flex bison gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zstd file wget
+      # Cache only the verified download; each build gets a clean SDK and feeds.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sdk-download
+          key: openwrt-a53-sdk-${{ matrix.sha256 }}
+      - name: Download and verify A53 SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sdk-download"
+          archive="$RUNNER_TEMP/sdk-download/$SDK_FILE"
+          if [ ! -f "$archive" ]; then
+            curl -fL --retry 3 "https://downloads.openwrt.org/releases/$OPENWRT_VERSION/targets/mediatek/filogic/$SDK_FILE" -o "$archive"
+          fi
+          echo "$SDK_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sdk"
+          tar --zstd -xf "$archive" --strip-components=1 -C "$RUNNER_TEMP/sdk"
+      - name: Configure native package format
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install libbpf elfutils zlib iproute2 luci-base rpcd libubox jsonfilter
+          mkdir -p package/fakeflow/src package/luci-app-fakeflow
+          git -C "$GITHUB_WORKSPACE" archive HEAD | tar -x -C package/fakeflow/src
+          rm -f package/fakeflow/src/packaging/openwrt/Makefile package/fakeflow/src/packaging/luci/Makefile
+          cp "$GITHUB_WORKSPACE/packaging/openwrt/Makefile" package/fakeflow/Makefile
+          cp -a "$GITHUB_WORKSPACE/packaging/luci/." package/luci-app-fakeflow/
+          cat > .config <<'EOF'
+          CONFIG_ALL_NONSHARED=n
+          CONFIG_ALL_KMODS=n
+          CONFIG_ALL=n
+          CONFIG_PACKAGE_fakeflow=m
+          CONFIG_PACKAGE_luci-app-fakeflow=m
+          CONFIG_SIGNED_PACKAGES=n
+          EOF
+          if [ "$PACKAGE_FORMAT" = apk ]; then
+            echo 'CONFIG_USE_APK=y' >> .config
+          fi
+          make defconfig
+          grep -qx "CONFIG_TARGET_ARCH_PACKAGES=\"$PACKAGE_ARCH\"" .config
+          grep -qx 'CONFIG_PACKAGE_fakeflow=m' .config
+          grep -qx 'CONFIG_PACKAGE_luci-app-fakeflow=m' .config
+          if [ "$PACKAGE_FORMAT" = apk ]; then
+            grep -qx 'CONFIG_USE_APK=y' .config
+          elif grep -qx 'CONFIG_USE_APK=y' .config; then
+            echo '::error::IPK job unexpectedly selected APK packaging'
+            exit 1
+          fi
+      - name: Build fakeflow and LuCI
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          set -euo pipefail
+          make -j2 package/luci-app-fakeflow/compile V=s BPF_CLANG=clang 2>&1 | tee "$RUNNER_TEMP/openwrt-a53-build.log"
+      - name: Check binaries and collect packages
+        run: |
+          set -euo pipefail
+          sdk="$RUNNER_TEMP/sdk"
+          mapfile -t binaries < <(find "$sdk/build_dir" -path '*/fakeflow-*/build/fakeflow' -type f)
+          test "${#binaries[@]}" -eq 1
+          readelf -h "${binaries[0]}" | tee "$RUNNER_TEMP/fakeflow-elf.txt"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/fakeflow-elf.txt"
+          readelf -h "${binaries[0]}.bpf.o" | tee "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
+          grep -Eq 'Machine:[[:space:]]+Linux BPF' "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
+          mkdir -p dist
+          if [ "$PACKAGE_FORMAT" = ipk ]; then
+            main_pattern="fakeflow_*_${PACKAGE_ARCH}.ipk"
+            luci_pattern='luci-app-fakeflow_*_all.ipk'
+          else
+            main_pattern='fakeflow-*.apk'
+            luci_pattern='luci-app-fakeflow-*.apk'
+          fi
+          mapfile -t main_packages < <(find "$sdk/bin/packages/$PACKAGE_ARCH" -name "$main_pattern" -type f)
+          mapfile -t luci_packages < <(find "$sdk/bin/packages/$PACKAGE_ARCH" -name "$luci_pattern" -type f)
+          test "${#main_packages[@]}" -eq 1
+          test "${#luci_packages[@]}" -eq 1
+          cp "${main_packages[0]}" "${luci_packages[0]}" dist/
+          cp "$sdk/.config" dist/sdk.config
+          printf 'OpenWrt SDK: %s\nSDK target: mediatek/filogic\nPackage architecture: %s (musl)\nFormat: %s\nSource: %s\nSDK SHA256: %s\nValidation: cross-build and ELF architecture checks; no device kernel-load test.\n' \
+            "$OPENWRT_VERSION" "$PACKAGE_ARCH" "$PACKAGE_FORMAT" "$(git rev-parse HEAD)" "$SDK_SHA256" > dist/BUILD.txt
+          (cd dist && sha256sum *."$PACKAGE_FORMAT" > SHA256SUMS)
+      - name: Upload A53 packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: fakeflow-openwrt-${{ matrix.version }}-aarch64_cortex-a53-${{ matrix.format }}
+          path: dist/
+          if-no-files-found: error
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-a53-${{ matrix.format }}-build-log
+          path: |
+            ${{ runner.temp }}/openwrt-a53-build.log
+            ${{ runner.temp }}/fakeflow*-elf.txt
+            ${{ runner.temp }}/sdk/.config

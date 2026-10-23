@@ -74,6 +74,8 @@ TCP 每个握手默认最多 3 批，间隔至少 200 ms。SYN-ACK 携带数据�
 
 ## 部署与测试
 
+A53 安装包：运行 Actions 中的 **OpenWrt A53 IPK and APK**（`openwrt-a53.yml`），并行使用 OpenWrt 24.10.5 / 25.12.5 的 mediatek/filogic SDK 构建 `aarch64_cortex-a53` IPK / APK。每个 Artifact 包含主程序、LuCI 包、SHA256 和构建信息。安装前确认固件的软件包架构、包格式及运行库 ABI 匹配；该流程检查交叉编译与 ELF 架构，不代表已通过设备内核加载测试。
+
 正式版本在 [Releases](https://github.com/lilu0826/fake-flow/releases) 下载：OpenWrt 24.10 选择 IPK，
 25.12 选择 APK；均提供 x86_64 主程序、架构无关 LuCI 包、安装说明与 SHA256 校验值。
 推送 `0.1.0` 这样的版本标签会触发 `Release OpenWrt packages` 工作流：从标签源码重新构建，
