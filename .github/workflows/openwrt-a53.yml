@@ -125,11 +125,14 @@ jobs:
           package_root="$RUNNER_TEMP/package-root"
           rm -rf "$package_root"
           mkdir -p "$package_root"
-          tar -xzf "${main_packages[0]}" -C "$package_root"
-          if [ -f "$package_root/data.tar.gz" ]; then
+          if [ "$PACKAGE_FORMAT" = ipk ]; then
+            tar -xzf "${main_packages[0]}" -C "$package_root"
+            test -f "$package_root/data.tar.gz"
             mkdir -p "$package_root/data"
             tar -xzf "$package_root/data.tar.gz" -C "$package_root/data"
             package_root="$package_root/data"
+          else
+            "$sdk/staging_dir/host/bin/apk" extract --no-chown --destination "$package_root" "${main_packages[0]}"
           fi
           fakeflow_binary=$(find "$package_root" -path '*/usr/sbin/fakeflow' -type f -print -quit)
           fakeflow_bpf=$(find "$package_root" -path '*/usr/lib/fakeflow/fakeflow.bpf.o' -type f -print -quit)
