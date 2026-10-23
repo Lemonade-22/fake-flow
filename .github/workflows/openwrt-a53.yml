@@ -101,13 +101,18 @@ jobs:
         working-directory: ${{ runner.temp }}/sdk
         run: |
           set -euo pipefail
-          make -j2 package/luci-app-fakeflow/compile V=s BPF_CLANG=clang 2>&1 | tee "$RUNNER_TEMP/openwrt-a53-build.log"
+          make -j2 package/fakeflow/compile V=s BPF_CLANG=clang 2>&1 | tee "$RUNNER_TEMP/openwrt-a53-build.log"
+          make -j2 package/luci-app-fakeflow/compile V=s BPF_CLANG=clang 2>&1 | tee -a "$RUNNER_TEMP/openwrt-a53-build.log"
       - name: Check binaries and collect packages
         run: |
           set -euo pipefail
           sdk="$RUNNER_TEMP/sdk"
           mapfile -t binaries < <(find "$sdk/build_dir" -path '*/fakeflow-*/build/fakeflow' -type f)
-          test "${#binaries[@]}" -eq 1
+          if [ "${#binaries[@]}" -ne 1 ]; then
+            echo "::error::Expected one fakeflow executable, found ${#binaries[@]} in $sdk/build_dir"
+            printf '%s\n' "${binaries[@]}"
+            exit 1
+          fi
           readelf -h "${binaries[0]}" | tee "$RUNNER_TEMP/fakeflow-elf.txt"
           grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/fakeflow-elf.txt"
           readelf -h "${binaries[0]}.bpf.o" | tee "$RUNNER_TEMP/fakeflow-bpf-elf.txt"
