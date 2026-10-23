@@ -132,7 +132,7 @@ jobs:
             tar -xzf "$package_root/data.tar.gz" -C "$package_root/data"
             package_root="$package_root/data"
           else
-            "$sdk/staging_dir/host/bin/apk" extract --no-chown --destination "$package_root" "${main_packages[0]}"
+            "$sdk/staging_dir/host/bin/apk" --allow-untrusted extract --no-chown --destination "$package_root" "${main_packages[0]}"
           fi
           fakeflow_binary=$(find "$package_root" -path '*/usr/sbin/fakeflow' -type f -print -quit)
           fakeflow_bpf=$(find "$package_root" -path '*/usr/lib/fakeflow/fakeflow.bpf.o' -type f -print -quit)
